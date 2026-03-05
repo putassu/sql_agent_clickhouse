@@ -15,6 +15,10 @@ from qdrant_client.models import (
 from rank_bm25 import BM25Okapi
 import tiktoken
 
+import httpx  # Добавьте в импорты в самом верху файла
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # Чтобы не спамило варнингами
+
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,6 +47,25 @@ class ResumableSearchEngine:
     def __init__(self):
         self.client = OpenAI(base_url=Config.API_BASE_URL, api_key=Config.API_KEY)
         self.qdrant = QdrantClient(host=Config.QDRANT_HOST, port=Config.QDRANT_PORT)
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self.bm25_data = self._load_bm25()
+
+    # Создаем HTTP-клиент, который игнорирует проверку SSL
+        unsafe_client = httpx.Client(verify=False) 
+        
+        self.client = OpenAI(
+            base_url=Config.API_BASE_URL, 
+            api_key=Config.API_KEY,
+            http_client=unsafe_client  # <--- Передаем этот клиент сюда
+        )
+        
+        # # Для Qdrant (на случай, если там тоже SSL)
+        # self.qdrant = QdrantClient(
+        #     host=Config.QDRANT_HOST, 
+        #     port=Config.QDRANT_PORT,
+        #     https=False # Если используете http://
+        # )
+        
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.bm25_data = self._load_bm25()
 
@@ -266,3 +289,4 @@ if __name__ == "__main__":
     # Запуск: если упадет, просто запустите снова.
     # Если нужно все очистить и начать с нуля: engine.index_data(clean_start=True)
     engine.index_data(clean_start=False) 
+
