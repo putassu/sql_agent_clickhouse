@@ -3,6 +3,7 @@ import base64
 import io
 import pandas as pd
 
+sandbox_url = "xxxx"
 # Константа с описанием логики (ваша переменная)
 STRATEGY_DESCRIPTION = """
 В этой таблице нужно делать финальную выборку для ответа на поставленный вопрос.
@@ -78,7 +79,7 @@ def calculate_in_sandbox(dfs: list[pd.DataFrame], df_names: list[str], calculati
     print("Сгенерированный код для проверки:\n", generated_code)
     
     # 4. Выполняем в песочнице
-    sandbox_url = "http://10.114.86.136:8000/run_sandbox_task"
+    sandbox_url = f"{sandbox_url}/run_sandbox_task"
     payload = {
         "task_id": "analytics_task",
         "language": "python",
