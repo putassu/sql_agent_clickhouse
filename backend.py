@@ -33,12 +33,53 @@ class ChatResponse(BaseModel):
 memory = MemorySaver()
 
 # ВАЖНО: Модифицируй human_in_the_loop_node, чтобы он ничего не спрашивал через input()
-def human_in_the_loop_node(state: Any):
-    # Этот узел теперь просто проходной. 
-    # Когда мы вызываем update_state извне, мы уже меняем данные.
+def human_in_the_loop_node(state: AgentState):
+    """
+    Этот узел теперь не спрашивает input(). 
+    Он запускается автоматически ПОСЛЕ того, как пользователь 
+    прислал данные через API эндпоинт /confirm.
+    """
+    logger.info("--- HUMAN CORRECTION NODE ---")
+    
+    # К этому моменту в state.user_feedback и state.resolved_entities 
+    # уже лежат данные, которые мы записали в эндпоинте /confirm.
+    
+    feedback = state.user_feedback
+    entities = state.resolved_entities
+
+    # Если пользователь просто подтвердил (нажал ОК), 
+    # мы гарантируем, что у всех сущностей confidence = 1.0, 
+    # чтобы пройти валидацию в conditional_edges.
+    if feedback == "CONFIRMED":
+        for e in entities:
+            e.confidence = 1.0
+            
+    print(f"Обработка фидбека: {feedback}")
+    
     return {
-        "human_retry_count": state.get("human_retry_count", 0) + 1
+        "user_feedback": feedback,
+        "resolved_entities": entities,
+        "human_retry_count": state.human_retry_count + 1
     }
+
+def should_continue_after_human(state: AgentState):
+    # Если пользователь написал текстовый фидбек (исправление), 
+    # возвращаемся в начало на перепарсинг интента.
+    if state.user_feedback and state.user_feedback != "CONFIRMED":
+        return "reparse_intent"
+    
+    # Если всё подтверждено — идем генерить SQL
+    return "generate_sql"
+
+# В сборке графа:
+workflow.add_conditional_edges(
+    "human_correction",
+    should_continue_after_human,
+    {
+        "reparse_intent": "intent_parser",  # Возврат в начало
+        "generate_sql": "sql_generator"    # Вперед к данным
+    }
+)
 
 # Собираем граф (используй свой существующий код сборки, но с прерыванием)
 # workflow = StateGraph(AgentState)
