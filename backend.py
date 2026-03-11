@@ -93,69 +93,71 @@ compiled_graph = workflow.compile(
 
 # --- Эндпоинты API ---
 
-@app.post("/ask", response_model=ChatResponse)
-def ask_question(req: ChatRequest):
-    thread_id = req.thread_id or str(uuid.uuid4())
+@app.post("/ask")
+def ask(query: str, thread_id: str = "demo"):
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Начальный запуск
-    # Если это новый запрос, передаем raw_query
-    initial_input = {"raw_query": req.query}
-    
-    # Запускаем до первого прерывания или до конца
-    for event in compiled_graph.stream(initial_input, config=config):
-        pass # Просто прокручиваем узлы
-
-    # Проверяем состояние после остановки
-    state = compiled_graph.get_state(config)
-    
-    # Если граф остановился перед human_correction, значит нужны подтверждения
-    if state.next and "human_correction" in state.next:
-        return ChatResponse(
-            thread_id=thread_id,
-            status="need_confirmation",
-            entities=[e.dict() for e in state.values.get("resolved_entities", []) if e.confidence < 0.9]
-        )
-
-    # Если граф дошел до конца
-    return ChatResponse(
-        thread_id=thread_id,
-        status="completed",
-        answer=state.values.get("final_analysis")
-    )
-
-@app.post("/confirm", response_model=ChatResponse)
-def confirm_entities(req: SelectionRequest):
-    config = {"configurable": {"thread_id": req.thread_id}}
-    
-    # 1. Получаем текущее состояние
-    current_state = compiled_graph.get_state(config)
-    if not current_state.values:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    # 2. Обновляем сущности (ставим confidence 1.0 тем, кого выбрал юзер)
-    entities = current_state.values.get("resolved_entities", [])
-    for e in entities:
-        if e.db_id in req.selected_ids:
-            e.confidence = 1.0 # Подтверждаем
-    
-    # 3. Записываем обновленное состояние и фидбек
-    compiled_graph.update_state(config, {
-        "resolved_entities": entities,
-        "user_feedback": req.feedback
-    })
-
-    # 4. Продолжаем выполнение (передаем None, чтобы продолжить с точки прерывания)
-    for event in compiled_graph.stream(None, config=config):
+    # Запуск
+    for event in app.stream({"raw_query": query}, config):
         pass
 
-    # 5. Возвращаем финальный результат
-    final_state = compiled_graph.get_state(config)
-    return ChatResponse(
-        thread_id=req.thread_id,
-        status="completed",
-        answer=final_state.values.get("final_analysis")
-    )
+    state = app.get_state(config)
+    entities_dict = state.values.get("resolved_entities", {})
+    
+    # Формируем структуру для фронта
+    return {
+        "status": "need_confirmation",
+        "ask_user": state.values["intent"].ask_user if state.values.get("intent") else None,
+        "categories": {
+            "KPI": entities_dict.get("KPI", []),
+            "COMPANY": entities_dict.get("COMPANY", []),
+            "SEGMENT": entities_dict.get("COMPANY_SEGMENT", []),
+            "MISSING": entities_dict.get("MISSING", [])
+        }
+    }
+
+@app.post("/confirm")
+def confirm(thread_id: str, selected_ids: list[str] = None, text_feedback: str = None):
+    config = {"configurable": {"thread_id": thread_id}}
+    state = app.get_state(config)
+    
+    # 1. Если это выбор из чекбоксов
+    if selected_ids:
+        old_entities_dict = state.values.get("resolved_entities", {})
+        new_entities_dict = {}
+
+        for category, items in old_entities_dict.items():
+            if category == "MISSING":
+                continue # Пропущенные сущности не идут в SQL, их должен исправить текст
+            
+            # Фильтруем список внутри категории
+            filtered_items = [item for item in items if item.get("id") in selected_ids]
+            
+            if filtered_items:
+                # Ставим всем выбранным score 1.0 для надежности
+                for item in filtered_items:
+                    item["score"] = 1.0
+                new_entities_dict[category] = filtered_items
+        
+        # Обновляем стейт: подменяем старый словарь на отфильтрованный
+        app.update_state(config, {
+            "resolved_entities": new_entities_dict,
+            "user_feedback": "CONFIRMED"
+        }, as_node="human_correction")
+
+    # 2. Если это текстовое исправление
+    elif text_feedback:
+        app.update_state(config, {
+            "user_feedback": text_feedback
+        }, as_node="human_correction")
+
+    # Пробуждаем граф
+    for event in app.stream(None, config):
+        pass
+        
+    final_state = app.get_state(config)
+    return {"answer": final_state.values.get("final_analysis", "Готово")}
+
 
 if __name__ == "__main__":
     import uvicorn
