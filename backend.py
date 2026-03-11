@@ -13,20 +13,38 @@ app = FastAPI(title="Analytic Assistant API")
 
 # --- Схемы данных для API ---
 
-class ChatRequest(BaseModel):
-    query: str
-    thread_id: Optional[str] = None
+class EntityItem(BaseModel):
+    # Поля для найденных сущностей (KPI, COMPANY)
+    id: Optional[str] = None
+    name: Optional[str] = None
+    source_term: Optional[str] = None
+    score: Optional[float] = None
+    reason: Optional[str] = None
+    
+    # Поля для MISSING сущностей
+    term: Optional[str] = None
+    expected_type: Optional[str] = None
+    message: Optional[str] = None
 
-class SelectionRequest(BaseModel):
-    thread_id: str
-    selected_ids: List[str] # Список ID, которые выбрал юзер в чекбоксах
-    feedback: Optional[str] = None
-
+# Модель ответа от API
 class ChatResponse(BaseModel):
     thread_id: str
-    status: str # "need_confirmation" или "completed"
-    entities: Optional[List[Dict]] = None # Для выбора
+    status: str
+    ask_user: Optional[str] = None # Тот самый вопрос от LLM, если он есть
+    # Словарь, где ключ - категория (KPI, COMPANY...), а значение - список сущностей
+    categories: Dict[str, List[EntityItem]] = Field(default_factory=dict)
     answer: Optional[str] = None
+
+# Модель для подтверждения от пользователя
+class SelectionRequest(BaseModel):
+    thread_id: str
+    selected_ids: Optional[List[str]] = None # Список ID из чекбоксов
+    text_feedback: Optional[str] = None # Если юзер написал текст вместо выбора
+
+# Модель ответа (финальный результат)
+class FinalResponse(BaseModel):
+    status: str
+    answer: str # Финальный ответ от LLM (результат анализа или SQL)
 
 # --- Настройка Графа (Синхронная) ---
 
@@ -93,70 +111,87 @@ compiled_graph = workflow.compile(
 
 # --- Эндпоинты API ---
 
-@app.post("/ask")
-def ask(query: str, thread_id: str = "demo"):
+@app.post("/ask", response_model=ChatResponse)
+def ask(query: str, thread_id: str = "demo_id"):
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Запуск
+    # Прогон графа
     for event in app.stream({"raw_query": query}, config):
         pass
-
+        
     state = app.get_state(config)
+    
+    # Получаем словарь из стейта. Если его нет, отдаем пустой словарь
     entities_dict = state.values.get("resolved_entities", {})
     
-    # Формируем структуру для фронта
-    return {
-        "status": "need_confirmation",
-        "ask_user": state.values["intent"].ask_user if state.values.get("intent") else None,
-        "categories": {
-            "KPI": entities_dict.get("KPI", []),
-            "COMPANY": entities_dict.get("COMPANY", []),
-            "SEGMENT": entities_dict.get("COMPANY_SEGMENT", []),
-            "MISSING": entities_dict.get("MISSING", [])
-        }
-    }
+    return ChatResponse(
+        thread_id=thread_id,
+        status="awaiting_user",
+        ask_user=state.values["intent"].ask_user if state.values.get("intent") else None,
+        categories=entities_dict # FastAPI сам разложит это по полочкам
+    )
 
-@app.post("/confirm")
-def confirm(thread_id: str, selected_ids: list[str] = None, text_feedback: str = None):
-    config = {"configurable": {"thread_id": thread_id}}
-    state = app.get_state(config)
+@app.post("/confirm", response_model=FinalResponse)
+async def confirm_selection(request: SelectionRequest):
+    config = {"configurable": {"thread_id": request.thread_id}}
     
-    # 1. Если это выбор из чекбоксов
-    if selected_ids:
-        old_entities_dict = state.values.get("resolved_entities", {})
+    # 1. Получаем текущее состояние графа
+    current_state = app.get_state(config)
+    if not current_state.values:
+        return {"status": "error", "answer": "Сессия не найдена"}
+
+    # 2. Обработка ВЫБОРА ИЗ СПИСКА (selected_ids)
+    if request.selected_ids:
+        # Берем текущий словарь сущностей (KPI, COMPANY и т.д.)
+        old_entities_dict = current_state.values.get("resolved_entities", {})
         new_entities_dict = {}
 
+        # Проходим по категориям и оставляем только то, что выбрал юзер
         for category, items in old_entities_dict.items():
             if category == "MISSING":
-                continue # Пропущенные сущности не идут в SQL, их должен исправить текст
-            
-            # Фильтруем список внутри категории
-            filtered_items = [item for item in items if item.get("id") in selected_ids]
+                continue # Пропущенные не фильтруем по ID
+                
+            filtered_items = [
+                item for item in items 
+                if str(item.get("id")) in request.selected_ids
+            ]
             
             if filtered_items:
-                # Ставим всем выбранным score 1.0 для надежности
+                # Ставим score 1.0, чтобы SQL-генератор не сомневался
                 for item in filtered_items:
                     item["score"] = 1.0
                 new_entities_dict[category] = filtered_items
-        
-        # Обновляем стейт: подменяем старый словарь на отфильтрованный
+
+        # ОБНОВЛЯЕМ СТЕЙТ: записываем отфильтрованные сущности и ставим статус CONFIRMED
         app.update_state(config, {
             "resolved_entities": new_entities_dict,
             "user_feedback": "CONFIRMED"
         }, as_node="human_correction")
 
-    # 2. Если это текстовое исправление
-    elif text_feedback:
+    # 3. Обработка ТЕКСТОВОГО ИСПРАВЛЕНИЯ
+    elif request.text_feedback:
         app.update_state(config, {
-            "user_feedback": text_feedback
+            "user_feedback": request.text_feedback
         }, as_node="human_correction")
 
-    # Пробуждаем граф
-    for event in app.stream(None, config):
-        pass
-        
-    final_state = app.get_state(config)
-    return {"answer": final_state.values.get("final_analysis", "Готово")}
+    # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
+    # Передаем None, так как мы уже обновили стейт через update_state
+    try:
+        async for event in app.astream(None, config, stream_mode="values"):
+            final_values = event
+    except Exception as e:
+        print(f"Ошибка при завершении графа: {e}")
+        return {"status": "error", "answer": "Ошибка при генерации ответа"}
+
+    # 5. Возвращаем результат
+    # final_analysis — это поле, куда твой последний узел пишет ответ
+    answer = final_values.get("final_analysis", "Анализ завершен успешно")
+    
+    return FinalResponse(
+        status="success",
+        answer=answer
+    )
+
 
 
 if __name__ == "__main__":
