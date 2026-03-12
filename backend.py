@@ -11,6 +11,17 @@ from langgraph.checkpoint.memory import MemorySaver
 
 app = FastAPI(title="Analytic Assistant API")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+# Добавь это сразу после создания app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Разрешает запросы с любого адреса (для тестов)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- Схемы данных для API ---
 
 class EntityItem(BaseModel):
