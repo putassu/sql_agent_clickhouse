@@ -1,1 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Analytic Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        .chat-container { height: calc(100vh - 160px); }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #e2e8f0; border-radius: 10px; }
+        .message-appear { animation: fadeIn 0.3s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-slate-50">
+
+<div class="max-w-4xl mx-auto h-screen flex flex-col p-4">
+    <!-- Header -->
+    <header class="flex items-center justify-between py-4 px-6 bg-white shadow-sm rounded-2xl mb-4">
+        <div class="flex items-center gap-3">
+            <div class="bg-blue-600 p-2 rounded-lg text-white">
+                <i data-lucide="database"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-slate-800">Analytic Agent</h1>
+                <p class="text-xs text-green-500 flex items-center gap-1">
+                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Online
+                </p>
+            </div>
+        </div>
+        <button onclick="location.reload()" class="text-slate-400 hover:text-slate-600 transition-colors">
+            <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+        </button>
+    </header>
+
+    <!-- Chat Area -->
+    <div id="chat-window" class="chat-container overflow-y-auto custom-scrollbar flex flex-col gap-4 p-2">
+        <!-- Приветствие -->
+        <div class="flex gap-3 max-w-[80%] message-appear">
+            <div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0">
+                <i data-lucide="bot" class="w-5 h-5 text-slate-600"></i>
+            </div>
+            <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100">
+                <p class="text-slate-700 text-sm">Здравствуйте! Введите ваш запрос, например: <b>"Покажи продажи Северстали за 2024 год"</b></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Indicator (Hidden by default) -->
+    <div id="global-loader" class="hidden flex items-center gap-2 ml-12 mb-4">
+        <div class="loader"></div>
+        <span class="text-xs text-slate-400">Анализирую данные...</span>
+    </div>
+
+    <!-- Input Area -->
+    <div class="mt-auto bg-white p-4 rounded-2xl shadow-lg border border-slate-100">
+        <div class="flex gap-2">
+            <input id="user-input" type="text" 
+                class="flex-1 bg-slate-50 border-none focus:ring-2 focus:ring-blue-500 rounded-xl px-4 py-3 text-sm transition-all outline-none" 
+                placeholder="Задайте вопрос аналитику...">
+            <button onclick="sendAsk()" id="send-btn" class="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-xl transition-all shadow-md active:scale-95">
+                <i data-lucide="send" class="w-5 h-5"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    lucide.createIcons();
+    
+    const chatWindow = document.getElementById('chat-window');
+    const userInput = document.getElementById('user-input');
+    const globalLoader = document.getElementById('global-loader');
+    let currentThreadId = "session_" + Math.random().toString(36).substr(2, 9);
+    const API_BASE = "http://localhost:8000"; // МЕНЯТЬ ТУТ
+
+    // Функция добавления сообщения в чат
+    function addMessage(role, content, isWidget = false) {
+        const div = document.createElement('div');
+        div.className = `flex gap-3 ${role === 'user' ? 'justify-end' : ''} message-appear mb-4`;
+        
+        const avatar = role === 'user' 
+            ? '<div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 order-2"><i data-lucide="user" class="w-5 h-5 text-blue-600"></i></div>'
+            : '<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0"><i data-lucide="bot" class="w-5 h-5 text-slate-600"></i></div>';
+
+        const bubbleClass = role === 'user' 
+            ? 'bg-blue-600 text-white rounded-tr-none' 
+            : 'bg-white text-slate-700 shadow-sm border border-slate-100 rounded-tl-none';
+
+        div.innerHTML = `
+            ${avatar}
+            <div class="${bubbleClass} p-4 rounded-2xl max-w-[85%] text-sm">
+                ${content}
+            </div>
+        `;
+        chatWindow.appendChild(div);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+        lucide.createIcons();
+    }
+
+    // Первый этап: /ask
+    async function sendAsk() {
+        const query = userInput.value.trim();
+        if (!query) return;
+
+        addMessage('user', query);
+        userInput.value = '';
+        globalLoader.classList.remove('hidden');
+
+        try {
+            const response = await fetch(`${API_BASE}/ask?query=${encodeURIComponent(query)}&thread_id=${currentThreadId}`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            
+            if (data.status === "awaiting_user" || data.status === "awaiting_confirmation") {
+                renderSelectionWidget(data.categories, data.ask_user);
+            }
+        } catch (e) {
+            addMessage('bot', "Ошибка соединения с сервером. Проверьте запущен ли бэкенд.");
+        } finally {
+            globalLoader.classList.add('hidden');
+        }
+    }
+
+    // Рендер виджета с чекбоксами
+    function renderSelectionWidget(categories, askUserText) {
+        let html = `<div class="font-semibold mb-3 text-blue-800">${askUserText || "Подтвердите параметры запроса:"}</div>`;
+        
+        for (const [cat, items] of Object.entries(categories)) {
+            if (items.length === 0) continue;
+            
+            html += `<div class="mb-4">
+                <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-2">${cat}</div>
+                <div class="grid gap-2">`;
+            
+            items.forEach(item => {
+                if (cat === 'MISSING') {
+                    html += `<div class="flex items-center gap-2 p-2 bg-amber-50 border border-amber-100 rounded-lg text-amber-700 text-xs">
+                        <i data-lucide="alert-circle" class="w-4 h-4"></i> ${item.message || item.term}
+                    </div>`;
+                } else {
+                    html += `
+                    <label class="flex items-center gap-3 p-3 bg-slate-50 hover:bg-slate-100 rounded-xl cursor-pointer transition-all border border-transparent hover:border-blue-200">
+                        <input type="checkbox" name="entity" value="${item.id}" checked class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <div class="flex flex-col">
+                            <span class="font-medium text-slate-700">${item.name || item.source_term}</span>
+                            <span class="text-[10px] text-slate-400">ID: ${item.id} • Score: ${Math.round(item.score * 100)}%</span>
+                        </div>
+                    </label>`;
+                }
+            });
+            html += `</div></div>`;
+        }
+
+        html += `
+            <div class="mt-4 flex flex-col gap-2">
+                <button onclick="sendConfirm(this)" class="w-full bg-slate-800 hover:bg-black text-white py-3 rounded-xl font-medium transition-all shadow-md active:scale-95">
+                    Подтвердить выбор
+                </button>
+                <input type="text" id="feedback-text" placeholder="Или уточните текстом..." class="w-full text-xs p-2 border-b border-slate-200 outline-none focus:border-blue-500 bg-transparent">
+            </div>
+        `;
+        
+        addMessage('bot', html, true);
+    }
+
+    // Второй этап: /confirm
+    async function sendConfirm(btn) {
+        const container = btn.closest('.bg-white');
+        const checkboxes = container.querySelectorAll('input[name="entity"]:checked');
+        const feedback = container.querySelector('#feedback-text').value;
+        const selectedIds = Array.from(checkboxes).map(cb => cb.value);
+
+        btn.disabled = true;
+        btn.innerHTML = '<div class="loader mx-auto"></div>';
+        
+        try {
+            const response = await fetch(`${API_BASE}/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    thread_id: currentThreadId,
+                    selected_ids: selectedIds.length > 0 ? selectedIds : null,
+                    text_feedback: feedback || null
+                })
+            });
+            const data = await response.json();
+            
+            if (data.status === "success") {
+                addMessage('bot', `
+                    <div class="flex items-center gap-2 text-green-600 font-bold mb-2">
+                        <i data-lucide="check-circle" class="w-5 h-5"></i> Анализ выполнен
+                    </div>
+                    <div class="prose prose-sm text-slate-600">
+                        ${data.answer.replace(/\n/g, '<br>')}
+                    </div>
+                `);
+            } else {
+                addMessage('bot', "Ошибка: " + data.answer);
+            }
+        } catch (e) {
+            addMessage('bot', "Ошибка при подтверждении.");
+        }
+    }
+
+    // Enter для отправки
+    userInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendAsk();
+    });
+</script>
+
+</body>
+</html>
 
