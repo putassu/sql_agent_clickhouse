@@ -185,19 +185,34 @@ async def confirm_selection(request: SelectionRequest):
             "user_feedback": request.text_feedback
         }, as_node="human_correction")
 
-    # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
-    # Передаем None, так как мы уже обновили стейт через update_state
+        # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
     try:
-        async for event in app.astream(None, config, stream_mode="values"):
-            final_values = event
+        for event in compiled_graph.stream(None, config, stream_mode="values"):
+            pass # Нам не нужно сохранять event, мы возьмем весь стейт ниже
     except Exception as e:
         print(f"Ошибка при завершении графа: {e}")
-        return {"status": "error", "answer": "Ошибка при генерации ответа"}
+        return FinalResponse(status="error", answer="Ошибка при генерации ответа")
 
-    # 5. Возвращаем результат
-    # final_analysis — это поле, куда твой последний узел пишет ответ
-    answer = final_values.get("final_analysis", "Анализ завершен успешно")
+    # 5. ПРОВЕРЯЕМ СТАТУС ГРАФА ПОСЛЕ ВОЗОБНОВЛЕНИЯ
+    state_after_resume = compiled_graph.get_state(config)
     
+    # Если граф снова прервался и ждет ввода от пользователя
+    if state_after_resume.next and "human_correction" in state_after_resume.next:
+        entities_dict = state_after_resume.values.get("resolved_entities", {})
+        intent_obj = state_after_resume.values.get("intent")
+        ask_user_text = intent_obj.ask_user if intent_obj else "Пожалуйста, уточните сущности:"
+        
+        # Возвращаем тот же ответ, что и в /ask, чтобы фронт снова показал чекбоксы
+        return {
+            "thread_id": request.thread_id,
+            "status": "awaiting_confirmation", # или awaiting_user
+            "ask_user": ask_user_text,
+            "categories": entities_dict
+        }
+
+    # 6. Если граф дошел до конца (END)
+    answer = state_after_resume.values.get("final_analysis", "Анализ завершен успешно")
+
     return FinalResponse(
         status="success",
         answer=answer
