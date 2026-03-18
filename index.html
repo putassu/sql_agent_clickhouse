@@ -121,6 +121,17 @@
             
             if (data.status === "awaiting_user" || data.status === "awaiting_confirmation") {
                 renderSelectionWidget(data.categories, data.ask_user);
+            } else if (data.status === "success") {
+                addMessage('bot', `
+                    <div class="flex items-center gap-2 text-green-600 font-bold mb-2">
+                        <i data-lucide="check-circle" class="w-5 h-5"></i> Анализ выполнен
+                    </div>
+                    <div class="prose prose-sm text-slate-600">
+                        ${data.answer.replace(/\n/g, '<br>')}
+                    </div>
+                `);
+            } else {
+                addMessage('bot', "Ошибка: " + (data.answer || "Неизвестный статус"));
             }
         } catch (e) {
             addMessage('bot', "Ошибка соединения с сервером. Проверьте запущен ли бэкенд.");
@@ -146,9 +157,10 @@
                         <i data-lucide="alert-circle" class="w-4 h-4"></i> ${item.message || item.term}
                     </div>`;
                 } else {
+                    // Убран атрибут checked из input
                     html += `
                     <label class="flex items-center gap-3 p-3 bg-slate-50 hover:bg-slate-100 rounded-xl cursor-pointer transition-all border border-transparent hover:border-blue-200">
-                        <input type="checkbox" name="entity" value="${item.id}" checked class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                        <input type="checkbox" name="entity" value="${item.id}" class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
                         <div class="flex flex-col">
                             <span class="font-medium text-slate-700">${item.name || item.source_term}</span>
                             <span class="text-[10px] text-slate-400">ID: ${item.id} • Score: ${Math.round(item.score * 100)}%</span>
@@ -171,7 +183,7 @@
         addMessage('bot', html, true);
     }
 
-    // Второй этап: /confirm
+    // Второй этап и последующие итерации: /confirm
     async function sendConfirm(btn) {
         const container = btn.closest('.bg-white');
         const checkboxes = container.querySelectorAll('input[name="entity"]:checked');
@@ -193,7 +205,16 @@
             });
             const data = await response.json();
             
-            if (data.status === "success") {
+            // Скрываем форму ввода, чтобы старый виджет больше нельзя было использовать
+            const formArea = container.querySelector('.mt-4');
+            if (formArea) formArea.style.display = 'none';
+            
+            // Если сервер снова просит уточнения
+            if (data.status === "awaiting_user" || data.status === "awaiting_confirmation") {
+                renderSelectionWidget(data.categories, data.ask_user);
+            } 
+            // Если анализ успешно завершен
+            else if (data.status === "success") {
                 addMessage('bot', `
                     <div class="flex items-center gap-2 text-green-600 font-bold mb-2">
                         <i data-lucide="check-circle" class="w-5 h-5"></i> Анализ выполнен
@@ -202,11 +223,13 @@
                         ${data.answer.replace(/\n/g, '<br>')}
                     </div>
                 `);
-            } else {
-                addMessage('bot', "Ошибка: " + data.answer);
+            } 
+            // Ошибки и другие статусы
+            else {
+                addMessage('bot', "Ошибка: " + (data.answer || "Неизвестная ошибка сервера"));
             }
         } catch (e) {
-            addMessage('bot', "Ошибка при подтверждении.");
+            addMessage('bot', "Ошибка при подтверждении. Проверьте соединение.");
         }
     }
 
@@ -218,4 +241,3 @@
 
 </body>
 </html>
-
