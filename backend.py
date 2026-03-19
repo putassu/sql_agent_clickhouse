@@ -186,36 +186,36 @@ async def confirm_selection(request: SelectionRequest):
         }, as_node="human_correction")
 
         # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
+    # Инициализируем final_values текущим стейтом на случай, если stream будет пустым!
     try:
+        current_state = compiled_graph.get_state(config)
+        final_values = current_state.values or {}
+    except Exception:
+        final_values = {}
+
+    try:
+        # Пробуем докрутить граф до конца
         for event in compiled_graph.stream(None, config, stream_mode="values"):
-            pass # Нам не нужно сохранять event, мы возьмем весь стейт ниже
+            if event: # Защита от пустых ивентов
+                final_values = event
     except Exception as e:
         print(f"Ошибка при завершении графа: {e}")
-        return FinalResponse(status="error", answer="Ошибка при генерации ответа")
+        # ВАЖНО: Возвращаем Pydantic-модель, а не словарь!
+        return FinalResponse(
+            status="error", 
+            answer=f"Произошла ошибка при генерации ответа: {str(e)}"
+        )
 
-    # 5. ПРОВЕРЯЕМ СТАТУС ГРАФА ПОСЛЕ ВОЗОБНОВЛЕНИЯ
-    state_after_resume = compiled_graph.get_state(config)
-    
-    # Если граф снова прервался и ждет ввода от пользователя
-    if state_after_resume.next and "human_correction" in state_after_resume.next:
-        entities_dict = state_after_resume.values.get("resolved_entities", {})
-        intent_obj = state_after_resume.values.get("intent")
-        ask_user_text = intent_obj.ask_user if intent_obj else "Пожалуйста, уточните сущности:"
-        
-        # Возвращаем тот же ответ, что и в /ask, чтобы фронт снова показал чекбоксы
-        return {
-            "thread_id": request.thread_id,
-            "status": "awaiting_confirmation", # или awaiting_user
-            "ask_user": ask_user_text,
-            "categories": entities_dict
-        }
+    # 5. Возвращаем результат
+    # Безопасное извлечение ответа (если ключа нет или он None)
+    answer = final_values.get("final_analysis")
+    if not answer:
+        answer = "Анализ завершен успешно (ответ не найден в стейте)"
 
-    # 6. Если граф дошел до конца (END)
-    answer = state_after_resume.values.get("final_analysis", "Анализ завершен успешно")
-
+    # ВАЖНО: Убедитесь, что этот return находится на самом базовом уровне отступов функции!
     return FinalResponse(
         status="success",
-        answer=answer
+        answer=str(answer) # Принудительно в строку, чтобы Pydantic не ругался
     )
 
 
