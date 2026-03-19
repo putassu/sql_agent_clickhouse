@@ -185,39 +185,51 @@ async def confirm_selection(request: SelectionRequest):
             "user_feedback": request.text_feedback
         }, as_node="human_correction")
 
-        # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
-    # Инициализируем final_values текущим стейтом на случай, если stream будет пустым!
+    # 4. ЗАПУСКАЕМ ГРАФ ДАЛЬШЕ
     try:
-        current_state = compiled_graph.get_state(config)
-        final_values = current_state.values or {}
-    except Exception:
-        final_values = {}
-
-    try:
-        # Пробуем докрутить граф до конца
+        # Крутим граф до следующей паузы или до конца
         for event in compiled_graph.stream(None, config, stream_mode="values"):
-            if event: # Защита от пустых ивентов
-                final_values = event
+            pass # Нам не обязательно сохранять event здесь, мы возьмем финальный стейт ниже
     except Exception as e:
-        print(f"Ошибка при завершении графа: {e}")
-        # ВАЖНО: Возвращаем Pydantic-модель, а не словарь!
+        print(f"Ошибка при выполнении графа: {e}")
         return FinalResponse(
             status="error", 
-            answer=f"Произошла ошибка при генерации ответа: {str(e)}"
+            answer=f"Произошла ошибка: {str(e)}"
         )
 
-    # 5. Возвращаем результат
-    # Безопасное извлечение ответа (если ключа нет или он None)
-    answer = final_values.get("final_analysis")
-    if not answer:
-        answer = "Анализ завершен успешно (ответ не найден в стейте)"
+    # 5. ПРОВЕРЯЕМ, ЧТО СЛУЧИЛОСЬ С ГРАФОМ
+    current_state = compiled_graph.get_state(config)
+    
+    # Если current_state.next НЕ пустой, значит граф СНОВА встал на паузу!
+    if current_state.next:
+        print(f"Граф снова на паузе, ждет узел: {current_state.next}")
+        
+        # ДОСТАЕМ данные для вторых чекбоксов из стейта
+        # ВНИМАНИЕ: Замените "question" и "options" на те ключи, 
+        # которые вы реально используете в вашем State для чекбоксов!
+        question_text = current_state.values.get("question", "Пожалуйста, уточните данные:")
+        options_list = current_state.values.get("options", [])
+        
+        # Возвращаем ChatResponse, чтобы UI отрисовал новые чекбоксы
+        return ChatResponse(
+            type="checkbox", # или как у вас называется тип для чекбоксов
+            question=question_text,
+            options=options_list
+        )
+    
+    # 6. ЕСЛИ current_state.next ПУСТОЙ, значит граф ЗАВЕРШИЛСЯ
+    else:
+        print("Граф успешно дошел до конца.")
+        
+        # Достаем финальный ответ
+        answer = current_state.values.get("final_analysis")
+        if not answer:
+            answer = "Анализ завершен успешно (ответ не найден в стейте)"
 
-    # ВАЖНО: Убедитесь, что этот return находится на самом базовом уровне отступов функции!
-    return FinalResponse(
-        status="success",
-        answer=str(answer) # Принудительно в строку, чтобы Pydantic не ругался
-    )
-
+        return FinalResponse(
+            status="success",
+            answer=str(answer)
+        )
 
 
 if __name__ == "__main__":
