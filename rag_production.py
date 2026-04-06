@@ -283,6 +283,173 @@ class ResumableSearchEngine:
             
         return results
 
+        def add_synonym(self, parent_id: str, synonym_text: str, item_type: str, domain: list = None, full_data: dict = None) -> str:
+        """
+        Добавляет новый синоним для существующей сущности, если его еще нет.
+        """
+        domain = domain or []
+        full_data = full_data or {"ID": parent_id, "name": synonym_text}
+
+        # Генерируем ID
+        chunk_id = self._generate_deterministic_id(parent_id, synonym_text)
+
+        # --- ПРОВЕРКА НА ДУБЛИКАТЫ ---
+        # Проверяем, есть ли уже этот синоним в нашем BM25 кэше / метаданных
+        if hasattr(self, 'bm25_data') and self.bm25_data and "meta" in self.bm25_data:
+            for meta in self.bm25_data["meta"]:
+                existing_id = self._generate_deterministic_id(meta['parent_id'], meta['text_variant'])
+                if existing_id == chunk_id:
+                    print(f"⚠️ Синоним '{synonym_text}' уже существует для ID {parent_id}. Пропуск.")
+                    return chunk_id # Возвращаем ID, но ничего не перезаписываем
+
+        # 1. Получаем эмбеддинг только если это новый синоним
+        vector = self._get_embedding(synonym_text)
+        if not vector:
+            logger.error("Не удалось получить вектор для синонима.")
+            return None
+
+        payload = {
+            "parent_id": parent_id,
+            "item_type": item_type,
+            "domain": domain,
+            "text_variant": synonym_text,
+            "full_data": full_data
+        }
+
+        # 2. Пишем в Qdrant
+        self.qdrant.upsert(
+            collection_name=Config.COLLECTION_NAME,
+            points=[PointStruct(id=chunk_id, vector=vector, payload=payload)]
+        )
+
+        # 3. Дописываем в файл прогресса
+        with open(Config.PROGRESS_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+        # 4. Обновляем BM25 в памяти
+        if hasattr(self, 'bm25_data') and self.bm25_data:
+            self.bm25_data["meta"].append(payload)
+            bm25_corpus = [ [str(t) for t in self.tokenizer.encode(p['text_variant'].lower())] for p in self.bm25_data["meta"] ]
+            self.bm25_data["engine"] = BM25Okapi(bm25_corpus)
+            
+            with open(Config.BM25_STORAGE_PATH, "wb") as f:
+                pickle.dump(self.bm25_data, f)
+
+        print(f"✅ Синоним '{synonym_text}' успешно добавлен! ID записи: {chunk_id}")
+        return chunk_id
+def delete_synonym(self, chunk_id: str):
+        """
+        Удаляет синоним по его ID из Qdrant и BM25 (пересобирая индекс).
+        """
+        from qdrant_client.models import PointIdsList # Убедитесь, что импорт есть в начале файла
+        
+        # 1. Удаляем из Qdrant
+        try:
+            self.qdrant.delete(
+                collection_name=Config.COLLECTION_NAME,
+                points_selector=PointIdsList(points=[chunk_id])
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при удалении из Qdrant: {e}")
+
+        # 2. Обновляем файл прогресса
+        if not os.path.exists(Config.PROGRESS_FILE):
+            print("Файл прогресса не найден, обновление BM25 пропущено.")
+            return
+
+        updated_meta = []
+        is_deleted = False
+
+        with open(Config.PROGRESS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                payload = json.loads(line)
+                # Вычисляем ID записи, чтобы понять, та ли это строка
+                current_id = self._generate_deterministic_id(payload['parent_id'], payload['text_variant'])
+                
+                if current_id == chunk_id:
+                    is_deleted = True
+                    continue # Пропускаем удаляемую запись
+                
+                updated_meta.append(payload)
+
+        # 3. Если запись была найдена, перезаписываем файл и пересобираем BM25
+        if is_deleted:
+            with open(Config.PROGRESS_FILE, 'w', encoding='utf-8') as f:
+                for payload in updated_meta:
+                    f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+            if updated_meta:
+                bm25_corpus = [ [str(t) for t in self.tokenizer.encode(p['text_variant'].lower())] for p in updated_meta ]
+                self.bm25_data = {
+                    "engine": BM25Okapi(bm25_corpus),
+                    "meta": updated_meta
+                }
+                with open(Config.BM25_STORAGE_PATH, "wb") as f:
+                    pickle.dump(self.bm25_data, f)
+            else:
+                self.bm25_data = None # Индекс пуст
+                if os.path.exists(Config.BM25_STORAGE_PATH):
+                    os.remove(Config.BM25_STORAGE_PATH)
+                    
+            print(f"🗑️ Запись синонима {chunk_id} успешно удалена.")
+        else:
+            print(f"⚠️ Запись с ID {chunk_id} не найдена в метаданных.")
+
+    def add_synonym(self, parent_id: str, synonym_text: str, item_type: str, domain: list = None, full_data: dict = None) -> str:
+        """
+        Добавляет новый синоним для существующей сущности, если его еще нет.
+        """
+        domain = domain or []
+        full_data = full_data or {"ID": parent_id, "name": synonym_text}
+
+        # Генерируем ID
+        chunk_id = self._generate_deterministic_id(parent_id, synonym_text)
+
+        # --- ПРОВЕРКА НА ДУБЛИКАТЫ ---
+        # Проверяем, есть ли уже этот синоним в нашем BM25 кэше / метаданных
+        if hasattr(self, 'bm25_data') and self.bm25_data and "meta" in self.bm25_data:
+            for meta in self.bm25_data["meta"]:
+                existing_id = self._generate_deterministic_id(meta['parent_id'], meta['text_variant'])
+                if existing_id == chunk_id:
+                    print(f"⚠️ Синоним '{synonym_text}' уже существует для ID {parent_id}. Пропуск.")
+                    return chunk_id # Возвращаем ID, но ничего не перезаписываем
+
+        # 1. Получаем эмбеддинг только если это новый синоним
+        vector = self._get_embedding(synonym_text)
+        if not vector:
+            logger.error("Не удалось получить вектор для синонима.")
+            return None
+
+        payload = {
+            "parent_id": parent_id,
+            "item_type": item_type,
+            "domain": domain,
+            "text_variant": synonym_text,
+            "full_data": full_data
+        }
+
+        # 2. Пишем в Qdrant
+        self.qdrant.upsert(
+            collection_name=Config.COLLECTION_NAME,
+            points=[PointStruct(id=chunk_id, vector=vector, payload=payload)]
+        )
+
+        # 3. Дописываем в файл прогресса
+        with open(Config.PROGRESS_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+        # 4. Обновляем BM25 в памяти
+        if hasattr(self, 'bm25_data') and self.bm25_data:
+            self.bm25_data["meta"].append(payload)
+            bm25_corpus = [ [str(t) for t in self.tokenizer.encode(p['text_variant'].lower())] for p in self.bm25_data["meta"] ]
+            self.bm25_data["engine"] = BM25Okapi(bm25_corpus)
+            
+            with open(Config.BM25_STORAGE_PATH, "wb") as f:
+                pickle.dump(self.bm25_data, f)
+
+        print(f"✅ Синоним '{synonym_text}' успешно добавлен! ID записи: {chunk_id}")
+        return chunk_id
+
 if __name__ == "__main__":
     engine = ResumableSearchEngine()
     
