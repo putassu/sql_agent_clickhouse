@@ -128,3 +128,20 @@ except json.JSONDecodeError:
 except Exception as e:
     print(f"Произошла непредвиденная ошибка: {e}")
 
+def filter_allowed_entities(matches: list) -> list:
+    """Фильтрует сущности по разрешенным ID."""
+    filtered = []
+    for match in matches:
+        # ID обычно лежит в корне full_data, которое возвращается как словарь матча
+        item_id = str(match.get("ID")) 
+        item_type = match.get("item_type")
+
+        if item_type == "KPI" and item_id not in ALLOWED_KPI_IDS:
+            continue
+        if item_type == "COMPANY_SEGMENT" and item_id not in ALLOWED_COMPANY_SEGMENT_IDS:
+            continue
+        if item_type == "COMPANY" and item_id not in ALLOWED_COMPANY_IDS:
+            continue
+        
+        filtered.append(match)
+    return filtered
