@@ -242,14 +242,36 @@ def sql_generator_node(state: AgentState):
     return {"sql_query": sql, "retry_count": state.retry_count + 1}
 
 def sql_validator_node(state: AgentState):
-    """Узел 4: Проверка SQL через EXPLAIN."""
-    logger.info("Validating SQL...")
-    is_valid, error_msg = validate_sql_with_explain(state.sql_query)
-
-    if not is_valid:
-        logger.warning(f"SQL Validation failed: {error_msg}")
+    """Узел 4: Проверка SQL (выполнение, проверка синтаксиса и наличия данных)."""
+    logger.info("Validating SQL and checking for empty results...")
+    
+    try:
+        # Пытаемся выполнить сгенерированный запрос
+        df = query_clickhouse(state.sql_query)
+        
+        # Если запрос отработал без ошибок, но вернул $$0$$ строк (пустой датафрейм)
+        if df.empty:
+            error_msg = (
+                "SQL_ERROR: Запрос вернул пустой результат. Возможно, нет данных за выбранный период. "
+                "Попробуй другие фильтры. Например, если нет данных по продажам за год, "
+                "но есть нарастающий итог на 12-й месяц года (что то же самое) — "
+                "попробуй более широкие фильтры времени (возьми все записи по этому году, "
+                "а последующие узлы сами разберутся, в какой строчке лежит ответ)."
+            )
+            logger.warning(f"SQL Validation failed (Empty Result): {error_msg}")
+            return {"sql_error": error_msg}
+        
+        # Если данные есть, возвращаем отсутствие ошибок. 
+        # (Опционально можно сразу сохранить данные в state, чтобы не делать запрос дважды)
+        df_dict = df.astype(str).to_dict(orient="records")
+        return {"sql_error": None, "sql_data": df_dict}
+        
+    except Exception as e:
+        # Перехватываем реальные ошибки синтаксиса SQL от ClickHouse
+        error_msg = f"SQL_ERROR: Ошибка выполнения запроса (синтаксис или схема данных): {str(e)}"
+        logger.warning(f"SQL Validation failed (Execution Error): {error_msg}")
         return {"sql_error": error_msg}
-    return {"sql_error": None}
+
 
 def execution_node(state: AgentState):
     """Узел 5: Выполнение запроса в ClickHouse."""
